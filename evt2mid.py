@@ -65,7 +65,7 @@ with open(args.file_name, "rb") as fevt:
     evtdata = fevt.read()
 
 if evtdata:
-    midBeatsPerMinute = 125  # EVT file fixed at 2500 ticks per minute
+    midBeatsPerMinute = 125  # EVT file fixed at 1000 ticks per second
     midTicksPerBeat = 480  #
     midTruck = b''  # MIDI Track Events, to be written in the .mid file
 
