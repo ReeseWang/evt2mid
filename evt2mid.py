@@ -55,8 +55,8 @@ def appendMidEventToTruck(dt, data):
     global midTruck, args
     bytesToAppend = getVLQ(dt) + data
     if args.verbose:
-        print('Dt={}'.format(dt), end=', ')
-        print('Will write {} to truck'.format(bytesToHexString(bytesToAppend)))
+        print('Dt = {} ticks, Will write {} to truck'.
+              format(dt, bytesToHexString(bytesToAppend)))
     midTruck.extend(bytesToAppend)
 
 
@@ -78,12 +78,13 @@ def clockSync(ticksms):
                        2500/tickCount['beat']
                        )
             )
-        genMidiEvent(b'\xff\x51\x03\x00\x00\x00')
+        genMidiEvent(b'\xff\x51\x03\x07\xa1\x20')
         lastUPB = 1000*ticksms*24  # microseconds per beat
         assert(midTruck[-6:-3] == b'\xff\x51\x03')
         midTruck[-3:] = lastUPB.to_bytes(3, 'big')
 
-        print('\nAppending Events to Truck:')
+        if args.verbose:
+            print('\nAppending Events to Truck:')
         dtAccu = 0  # Accumulation of delta time since last clock
         while len(evtDTQueue) > 1:
             dt = round(evtDTQueue.popleft() / ticksms * (midTicksPerBeat//24))
@@ -93,7 +94,8 @@ def clockSync(ticksms):
         evtDTQueue.popleft()
         appendMidEventToTruck(
             midTicksPerBeat//24 - dtAccu, midEventQueue.popleft())
-        print('\n')
+        if args.verbose:
+            print('')
         pass
 
 
@@ -111,11 +113,10 @@ with open(args.file_name, "rb") as fevt:
     evtdata = fevt.read()
 
 if evtdata:
-    midBeatsPerMinute = 125  # EVT file fixed at 1000 ticks per second
-    midTicksPerBeat = 480  #
+    midTicksPerBeat = 480  #  Must be 24's multiplication
     # MIDI Track Events, to be written in the .mid file
     # Initialized with an empty speed change
-    midTruck = bytearray(b'\x00\xff\x51\x03\x00\x00\x00')
+    midTruck = bytearray(b'\x00\xff\x51\x03\x07\xa1\x20')
 
     tickCount = dict(total=0, beat=0, event=0)  # Ticks elapsed since xx
     truckCount = dict(beat=0)  # Bytes appended since xx
@@ -147,6 +148,7 @@ if evtdata:
                 tickCount['beat'] = 0
 
             elif evtdata[i] == 0x7A:  # Start
+                genMidiEvent(b'\xf0\x02\xfa\xf7')
                 if args.verbose:
                     print('{} Start'.format(getTimeStamp(tickCount['total'])))
 
