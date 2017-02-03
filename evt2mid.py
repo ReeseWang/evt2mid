@@ -1,4 +1,5 @@
 import argparse
+from collections import deque
 
 
 def bytesToHexString(data):
@@ -39,25 +40,31 @@ def getVLQ(number):
         return ret
 
 
-def appendMidiEvent(data):
-    global midTruck
-    global truckCount
-    global tickCount
-    global args
-    bytesToAppend = getVLQ(tickCount['event']) + data
+def genMidiEvent(data):
+    global tickCount, args, evtDTQueue, midEventQueue
     if args.verbose:
-        print('Will write {} to MIDI File'.
-              format(bytesToHexString(bytesToAppend)))
+        print('Event Queued: Delta Time {}ms, Data {}'.
+              format(tickCount['event'], bytesToHexString(data)))
+    evtDTQueue.append(tickCount['event'])
+    midEventQueue.append(data)
+
     tickCount['event'] = 0
-    midtruck.extend(bytesToAppend)
-    for key in truckCount:
-        truckCount[key] += len(bytesToAppend)
 
 
-def clockSync(ticks):
-    global midTruck, args, truckCount
+def appendMidEventToTruck(dt, data):
+    global midTruck, args
+    bytesToAppend = getVLQ(dt) + data
+    if args.verbose:
+        print('Dt={}'.format(dt), end=', ')
+        print('Will write {} to truck'.format(bytesToHexString(bytesToAppend)))
+    midTruck.extend(bytesToAppend)
 
-    if ticks == 0:
+
+def clockSync(ticksms):
+    global midTruck, args, truckCount, evtDTQueue, midEventQueue
+    global midTicksPerBeat
+
+    if ticksms == 0:
         if args.verbose:
             print('{} Initial Clock (1/24 Beat) Signal'.
                   format(getTimeStamp(tickCount['total'])))
@@ -71,26 +78,23 @@ def clockSync(ticks):
                        2500/tickCount['beat']
                        )
             )
-        i = -truckCount['beat']
-        if args.verbose:
-            print('Last Tempo Change Event is {}'.
-                  format(bytesToHexString(midTruck[i-3:i]
-                                          )
-                         )
-                  )
-            pass
-        lastUPB = 1000*ticks*24  # microseconds per beat
-        midTruck[i-3:i] = lastUPB.to_bytes(3, 'big')
-        if args.verbose:
-            print('Now changed to {}'.
-                  format(bytesToHexString(midTruck[i-3:i]
-                                          )
-                         )
-                  )
-            pass
+        genMidiEvent(b'\xff\x51\x03\x00\x00\x00')
+        lastUPB = 1000*ticksms*24  # microseconds per beat
+        assert(midTruck[-6:-3] == b'\xff\x51\x03')
+        midTruck[-3:] = lastUPB.to_bytes(3, 'big')
 
-    appendMidiEvent(b'\xff\x51\x03\x00\x00\x00')
-    truckCount['beat'] = 0
+        print('\nAppending Events to Truck:')
+        dtAccu = 0  # Accumulation of delta time since last clock
+        while len(evtDTQueue) > 1:
+            dt = round(evtDTQueue.popleft() / ticksms * (midTicksPerBeat//24))
+            dtAccu += dt
+            appendMidEventToTruck(dt, midEventQueue.popleft())
+            pass
+        evtDTQueue.popleft()
+        appendMidEventToTruck(
+            midTicksPerBeat//24 - dtAccu, midEventQueue.popleft())
+        print('\n')
+        pass
 
 
 parser = argparse.ArgumentParser(description='Convert EVT to MIDI')
@@ -110,10 +114,14 @@ if evtdata:
     midBeatsPerMinute = 125  # EVT file fixed at 1000 ticks per second
     midTicksPerBeat = 480  #
     # MIDI Track Events, to be written in the .mid file
-    midTruck = bytearray(b'')
+    # Initialized with an empty speed change
+    midTruck = bytearray(b'\x00\xff\x51\x03\x00\x00\x00')
 
     tickCount = dict(total=0, beat=0, event=0)  # Ticks elapsed since xx
     truckCount = dict(beat=0)  # Bytes appended since xx
+
+    evtDTQueue = deque([])  # Delta Time Queue in milliseconds
+    midEventQueue = deque([])  # MIDI Event Queue
 
     i = 0
     while i < len(evtdata):
@@ -161,9 +169,9 @@ if evtdata:
                 print('{} SysEx: {}'.format(getTimeStamp(tickCount['total']),
                                             getSysEx(evtdata[sysExStart:i+1])))
                 pass
-            appendMidiEvent(b'\xf0' +
-                            getVLQ(i-sysExStart) +
-                            evtdata[sysExStart+1:i+1])
+            genMidiEvent(b'\xf0' +
+                         getVLQ(i-sysExStart) +
+                         evtdata[sysExStart+1:i+1])
 
         elif evtdata[i] == 0xF1:  # Debut
             if args.verbose:
@@ -185,7 +193,7 @@ if evtdata:
                                  channelNo,
                                  getNoteName(evtdata[i+1])))
                     pass
-                appendMidiEvent(evtdata[i:i+3])
+                genMidiEvent(evtdata[i:i+3])
                 i += 2
 
             elif eventType == 0x90:  # Note on
@@ -201,7 +209,7 @@ if evtdata:
                                      channelNo,
                                      getNoteName(evtdata[i+1]),
                                      evtdata[i+2]))
-                appendMidiEvent(evtdata[i:i+3])
+                genMidiEvent(evtdata[i:i+3])
                 i += 2
 
             elif eventType == 0xA0:  # Poly aftertouch
@@ -211,7 +219,7 @@ if evtdata:
                                  channelNo,
                                  getNoteName(evtdata[i+1]),
                                  evtdata[i+2]))
-                appendMidiEvent(evtdata[i:i+3])
+                genMidiEvent(evtdata[i:i+3])
                 i += 2
 
             elif eventType == 0xB0:  # Control Change
@@ -221,7 +229,7 @@ if evtdata:
                                  channelNo, evtdata[i+1],
                                  evtdata[i+1],
                                  evtdata[i+2]))
-                appendMidiEvent(evtdata[i:i+3])
+                genMidiEvent(evtdata[i:i+3])
                 i += 2
 
             elif eventType == 0xC0:  # Program Change
@@ -230,7 +238,7 @@ if evtdata:
                           format(getTimeStamp(tickCount['total']),
                                  channelNo,
                                  evtdata[i+1]))
-                appendMidiEvent(evtdata[i:i+2])
+                genMidiEvent(evtdata[i:i+2])
                 i += 1
 
             elif eventType == 0xD0:  # Channel AT
@@ -239,7 +247,7 @@ if evtdata:
                           format(getTimeStamp(tickCount['total']),
                                  channelNo,
                                  evtdata[i+1]))
-                appendMidiEvent(evtdata[i:i+2])
+                genMidiEvent(evtdata[i:i+2])
                 i += 1
 
             elif eventType == 0xE0:  # Pitch Wheel
@@ -248,7 +256,7 @@ if evtdata:
                           format(getTimeStamp(tickCount['total']),
                                  channelNo,
                                  evtdata[i+1] + 256 * evtdata[i+2]))
-                appendMidiEvent(evtdata[i:i+3])
+                genMidiEvent(evtdata[i:i+3])
                 i += 2
 
             else:
@@ -270,9 +278,6 @@ if evtdata:
     with open(midFileName, "wb") as fmid:
         if args.verbose:
             print('Saving file {}'.format(midFileName))
-        midTruck = (b'\x00\xff\x51\x03' +
-                    int(60000000/midBeatsPerMinute).to_bytes(3, 'big') +
-                    midTruck)
         midHeader = (b'MThd' +
                      b'\x00\x00\x00\x06' +
                      b'\x00\x00' +
